@@ -14,23 +14,54 @@ class Error(Exception):
     pass
 
 
-class VKGroup:
-    @staticmethod
-    def get_info(group_id):
-        params = {
-            'v': '5.61',
-            'access_token': TOKEN,
-            'group_id': group_id,
-            'fields': ['name', 'members_count']
-        }
+class ApiVK:
+    params = {
+        'v': '5.61',
+        'access_token': TOKEN
+    }
 
+    api_vk_url = 'https://api.vk.com/method/'
+    vk_url = 'https://vk.com/'
+
+    @staticmethod
+    def execute(user_id, method, method_params):
+        resp = ApiVK.execute_with_timeout(method, method_params)
+
+        if 'error' in resp.json():
+            ApiVK.check_errors(user_id, resp.json()['error']['error_code'], resp.json()['error']['error_msg'])
+
+        return resp
+
+    @staticmethod
+    def execute_with_timeout(method, method_params):
         while True:
-            resp = requests.get(''.join((VKUser.api_vk_url, 'groups.getById')), params=params)
+            resp = requests.get(''.join((ApiVK.api_vk_url, method)), params=method_params)
 
             if 'error' in resp.json() and resp.json()['error']['error_code'] == 6:
-                time.sleep(0.9)
+                time.sleep(0.5)
             else:
-                break
+                return resp
+
+    @staticmethod
+    def check_errors(user_id, error_code, description):
+        if error_code == 18:
+            raise Error(f'Пользователь {user_id} удален или заблокирован.')
+        elif error_code == 7:
+            raise Error(f'Пользователь {user_id} закрыл доступ к списку групп.')
+        elif error_code == 15:
+            raise Error(f'Страница пользователя {user_id} скрыта.')
+        else:
+            raise Error(description)
+
+
+class VKGroup(ApiVK):
+    @staticmethod
+    def get_info(group_id):
+        params = ApiVK.params
+        params['group_id'] = group_id
+        params['fields'] = ['name', 'members_count']
+
+        resp = ApiVK.execute_with_timeout('groups.getById', params)
 
         try:
             group_info = dict()
@@ -42,9 +73,7 @@ class VKGroup:
             raise Error(f'Не удалось получить необходимую информацию о сообществе {group_id}')
 
 
-class VKUser:
-    api_vk_url = 'https://api.vk.com/method/'
-
+class VKUser(ApiVK):
     def __init__(self, user_id):
         if isinstance(user_id, int) or isinstance(user_id, str) and user_id.isdigit():
             self.id = user_id
@@ -52,7 +81,7 @@ class VKUser:
             self.get_id(user_id)
 
     def __str__(self):
-        return f'https://vk.com/id{int(self.id)}'
+        return f'{ApiVK.vk_url}id{int(self.id)}'
 
     def __hash__(self):
         return self.id.__hash__()
@@ -61,35 +90,17 @@ class VKUser:
         return self.id == other.id
 
     def get_id(self, name):
-        params = {
-            'v': '5.61',
-            'access_token': TOKEN,
-            'user_ids': name
-        }
+        params = ApiVK.params
+        params['user_ids'] = name
 
-        while True:
-            resp = requests.get(''.join((VKUser.api_vk_url, 'users.get')), params=params)
-
-            if 'error' in resp.json() and resp.json()['error']['error_code'] == 6:
-                time.sleep(0.9)
-            else:
-                break
+        resp = ApiVK.execute(self.id, 'users.get', params)
 
         self.id = resp.json()['response'][0]['id']
 
     def get_friends(self):
-        params = {
-            'v': '5.61',
-            'access_token': TOKEN
-        }
-
-        while True:
-            resp = requests.get(''.join((VKUser.api_vk_url, 'friends.get')), params=params)
-
-            if 'error' in resp.json() and resp.json()['error']['error_code'] == 6:
-                time.sleep(0.9)
-            else:
-                break
+        params = ApiVK.params
+        params['user_id'] = self.id
+        resp = ApiVK.execute(self.id, 'friends.get', ApiVK.params)
 
         friends_id = resp.json()['response']['items']
         friends = list()
@@ -99,23 +110,10 @@ class VKUser:
         return friends
 
     def get_groups(self):
-        params = {
-            'v': '5.61',
-            'access_token': TOKEN,
-            'user_id': self.id
-        }
+        params = ApiVK.params
+        params['user_id'] = self.id
 
-        while True:
-            resp = requests.get(''.join((VKUser.api_vk_url, 'groups.get')), params=params)
-
-            if 'error' in resp.json() and resp.json()['error']['error_code'] == 18:
-                raise Error(f'Пользователь {self.id} удален или заблокирован.')
-            elif 'error' in resp.json() and resp.json()['error']['error_code'] == 7:
-                raise Error(f'Пользователь {self.id} закрыл доступ к списку групп.')
-            elif 'error' in resp.json() and resp.json()['error']['error_code'] == 6:
-                time.sleep(0.9)
-            else:
-                break
+        resp = ApiVK.execute(self.id, 'groups.get', params)
 
         return set(resp.json()['response']['items'])
 
@@ -164,7 +162,7 @@ def main(arguments):
         groups_info.append(VKGroup.get_info(group))
 
     print('\rВыходные данные сформированы. Производится запись в файл...')
-    with open('groups.json', 'w') as fp:
+    with open('groups.json', 'w', encoding='utf-16') as fp:
         json.dump(groups_info, fp, indent='\t', ensure_ascii=False)
 
     print(f'В {uniq_groups_count} из {groups_count} групп, в которых состоит пользователь {main_user.id} '
