@@ -93,7 +93,7 @@ class VKUser(ApiVK):
         params = ApiVK.params
         params['user_ids'] = name
 
-        resp = ApiVK.execute(self.id, 'users.get', params)
+        resp = ApiVK.execute(name, 'users.get', params)
 
         self.id = resp.json()['response'][0]['id']
 
