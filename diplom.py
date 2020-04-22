@@ -1,4 +1,6 @@
 from datetime import datetime
+from copy import deepcopy
+from requests.exceptions import ReadTimeout, ConnectTimeout
 
 import requests
 import argparse
@@ -20,6 +22,12 @@ class ApiVK:
         'access_token': TOKEN
     }
 
+    exec_params = {
+        'v': '5.61',
+        'access_token': TOKEN,
+        'code': ''
+    }
+
     api_vk_url = 'https://api.vk.com/method/'
     vk_url = 'https://vk.com/'
 
@@ -34,13 +42,34 @@ class ApiVK:
 
     @staticmethod
     def execute_with_timeout(method, method_params):
+        ApiVK.exec_params['code'] = f'return API.{method}({method_params});'
+        read_timeout_flag = False
+
         while True:
-            resp = requests.get(''.join((ApiVK.api_vk_url, method)), params=method_params)
+            try:
+                # for testing ReadTimeout:
+                # add param ", timeout=(10, 0.0001)" to request noted below
+                # (where 10 is connection timeout and 0,0001 - read timeout)
+
+                resp = requests.get(''.join((ApiVK.api_vk_url, 'execute')), params=ApiVK.exec_params)
+            except (ReadTimeout, ConnectTimeout):
+                if not read_timeout_flag:
+                    print('Потеряна связь с сервером. Ожидание восстановления соединения.', end='')
+                    read_timeout_flag = True
+                else:
+                    print('.', end='')
+
+                time.sleep(1)
+                continue
 
             if 'error' in resp.json() and resp.json()['error']['error_code'] == 6:
-                time.sleep(0.5)
+                time.sleep(0.1)
             else:
                 return resp
+
+        if read_timeout_flag:
+            print(f'\r{" " * 100}', end='')
+            read_timeout_flag = False
 
     @staticmethod
     def check_errors(user_id, error_code, description):
@@ -57,7 +86,7 @@ class ApiVK:
 class VKGroup(ApiVK):
     @staticmethod
     def get_info(group_id):
-        params = ApiVK.params
+        params = deepcopy(ApiVK.params)
         params['group_id'] = group_id
         params['fields'] = ['name', 'members_count']
 
@@ -90,7 +119,7 @@ class VKUser(ApiVK):
         return self.id == other.id
 
     def get_id(self, name):
-        params = ApiVK.params
+        params = deepcopy(ApiVK.params)
         params['user_ids'] = name
 
         resp = ApiVK.execute(name, 'users.get', params)
@@ -98,19 +127,19 @@ class VKUser(ApiVK):
         self.id = resp.json()['response'][0]['id']
 
     def get_friends(self):
-        params = ApiVK.params
+        params = deepcopy(ApiVK.params)
         params['user_id'] = self.id
-        resp = ApiVK.execute(self.id, 'friends.get', ApiVK.params)
+        resp = ApiVK.execute(self.id, 'friends.get', params)
 
         friends_id = resp.json()['response']['items']
-        friends = list()
+        friends = set()
         for id in friends_id:
-            friends.append(VKUser(id))
+            friends.add(VKUser(id))
 
         return friends
 
     def get_groups(self):
-        params = ApiVK.params
+        params = deepcopy(ApiVK.params)
         params['user_id'] = self.id
 
         resp = ApiVK.execute(self.id, 'groups.get', params)
@@ -143,30 +172,39 @@ def main(arguments):
     groups_count = len(main_user_groups)
     print(f'\rПользователь состоит в {groups_count} группе(-ах).')
 
+    # any group should contain LE than n friends
+    n = 24
+    friend_members = dict.fromkeys(main_user_groups, 0)
     print('Запрос информации о группах каждого из друзей пользователя...')
     for ctr, friend in enumerate(all_friends):
         print(f'Проверяется пользователь {friend.id} ({ctr + 1}/{friends_count})... ', end='')
         try:
             friend_groups = friend.get_groups()
-            main_user_groups = set.difference(main_user_groups, friend_groups)
+            common_groups = set.intersection(main_user_groups, friend_groups)
+            for group in common_groups:
+                friend_members[group] += 1
+
             print('\r', end='')
         except Error as e:
             print(f'\r\t{e}')
             continue
 
-    print('Этап проверки групп друзей завершен. Начат сбор сведений о самих группах...')
+    print(f'Этап проверки групп друзей завершен. Выделение подходящих групп...')
+    required_groups = list(filter(lambda x: friend_members[x] <= n, friend_members))
+
+    print('Начат сбор сведений о самих группах...')
     groups_info = list()
-    uniq_groups_count = len(main_user_groups)
-    for ctr, group in enumerate(main_user_groups):
-        print(f'\rПолучение информации о группе {group} ({ctr + 1}/{uniq_groups_count})...', end='')
+    required_groups_count = len(required_groups)
+    for ctr, group in enumerate(required_groups):
+        print(f'\rПолучение информации о группе {group} ({ctr + 1}/{required_groups_count})...', end='')
         groups_info.append(VKGroup.get_info(group))
 
     print('\rВыходные данные сформированы. Производится запись в файл...')
     with open('groups.json', 'w', encoding='utf-16') as fp:
         json.dump(groups_info, fp, indent='\t', ensure_ascii=False)
 
-    print(f'В {uniq_groups_count} из {groups_count} групп, в которых состоит пользователь {main_user.id} '
-          f'не состоит никто из его друзей.\n'
+    print(f'В {required_groups_count} из {groups_count} групп, в которых состоит пользователь {main_user.id}, '
+          f'состоят не более чем {n} из его друзей.\n'
           f'Сведения о выделенных группах сохранены в файл <groups.json>.\n'
           f'Время работы: {datetime.now() - start}.')
 
